@@ -160,8 +160,7 @@ sortino = (strat_mean / downside_std) * np.sqrt(252)
 drawdown = (plot_df["equity"] / plot_df["equity"].cummax()) - 1
 max_dd = drawdown.min()
 
-days_delta = plot_df.index[-1] - plot_df.index
-total_days = int(days_delta.days)
+total_days = int((plot_df.index[-1] - plot_df.index[0]).days)
 
 last_equity_val = plot_df["equity"].iloc[-1]
 if hasattr(last_equity_val, 'item'):
@@ -193,10 +192,14 @@ latest = model_df.iloc[-1]
 X_future = pd.DataFrame([latest[features].values], columns=features)
 pred, std = model.predict(X_future, return_std=True)
 
+# FIXED: Strip array structures here using [0] to create clean real numbers
+clean_val = float(pred[0]) if hasattr(pred, "__len__") else float(pred)
+clean_std = float(std[0]) if hasattr(std, "__len__") else float(std)
+
 current_price = float(latest["Close"])
-pred_price = float(current_price * (1 + pred))
-low = float(pred_price - 1.96 * std * current_price)
-high = float(pred_price + 1.96 * std * current_price)
+pred_price = float(current_price * (1 + clean_val))
+low = float(pred_price - (1.96 * clean_std * current_price))
+high = float(pred_price + (1.96 * clean_std * current_price))
 direction = "TREND UP 🚀" if pred_price > current_price else "TREND DOWN 📉"
 current_regime = latest["regime"]
 
@@ -339,7 +342,6 @@ if active_plots > 0:
             line=dict(color='#00D4B2', shape='hv')
         ), row=current_row, col=1)
         
-        # Comprehensive 4-state vertical axis categorical labeling mapping configurations
         fig.update_yaxes(
             tickmode="array",
             tickvals=[-1, 0, 1, 2],
@@ -378,7 +380,6 @@ if active_plots > 0:
         fig.update_yaxes(title_text="RSI Value", row=current_row, col=1)
         current_row += 1
 
-    # Adaptive Height Configurations
     chart_layout_height = 500 if active_plots == 1 else (300 * active_plots)
     
     fig.update_layout(height=chart_layout_height, showlegend=True, template="plotly_dark", margin=dict(t=20, b=20, l=10, r=10))
