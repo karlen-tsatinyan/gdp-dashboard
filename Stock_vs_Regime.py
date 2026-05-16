@@ -19,7 +19,7 @@ st.set_page_config(
 # =========================================================
 # DATA SETTINGS
 # =========================================================
-POPULAR_TICKERS = ["NVDA","AAPL","MSFT","AMZN","GOOGL","META","TSLA","AMD","NFLX","AVGO","JPM","XOM","LLY","UNH","SPY"]
+POPULAR_TICKERS = ["NVDA","AAPL","MSFT","AMZN","GOOGL","META","TSLA","AMD","NFLX","AVGO","JPM","XOM","LLY","UNH","SPY", "Other (Type Custom...)"]
 POPULAR_BENCHMARKS = ["SPY","QQQ","IWM","DIA","TLT","GLD"]
 
 st.title("🔮 Advanced Predictive Quant Engine & Feature Sandbox")
@@ -31,7 +31,13 @@ current_year = datetime.datetime.now().year
 
 c1, c2, c3 = st.columns(3)
 with c1:
-    ticker = st.selectbox("Asset Ticker Selection", POPULAR_TICKERS, index=POPULAR_TICKERS.index("AAPL"))
+    selected_option = st.selectbox("Asset Ticker Selection", POPULAR_TICKERS, index=POPULAR_TICKERS.index("AAPL"))
+    
+    if selected_option == "Other (Type Custom...)":
+        custom_input = st.text_input("Enter Custom Ticker Symbol:", value="", placeholder="e.g., BTC-USD, MSFT, ^GSPC, etc.").strip()
+        ticker = custom_input.upper()
+    else:
+        ticker = selected_option
 with c2:
     benchmark = st.selectbox("Benchmark Base Anchor", POPULAR_BENCHMARKS, index=0)
 with c3:
@@ -66,10 +72,14 @@ def load_data(ticker_sym, bench_sym, start, end):
 
     return stock, bench
 
+if not ticker:
+    st.warning("Please select or type a valid ticker symbol above to initialize the matrix engine pipeline.")
+    st.stop()
+
 stock, bench = load_data(ticker, benchmark, FETCH_START, END_DATE)
 
 if stock.empty or bench.empty:
-    st.error("Data pipeline empty. Check underlying connections.")
+    st.error(f"Data pipeline empty for ticker '{ticker}'. Please verify the symbol spelling and underlying connection.")
     st.stop()
 
 # =========================================================
@@ -126,10 +136,8 @@ conditions = [
 ]
 choices = [2, 1, -1]
 
-# Default state if conditions aren't cleanly met is 0 (Neutral Cash Protective Hold)
 plot_df["signal"] = np.select(conditions, choices, default=0)
 
-# Apply exposure multipliers across multi-outcome metrics
 exposure_multiplier = np.select(
     [plot_df["signal"] == 1, plot_df["signal"] == -1, plot_df["signal"] == 2],
     [1.0, -1.0, 0.5], 
@@ -160,6 +168,7 @@ sortino = (strat_mean / downside_std) * np.sqrt(252)
 drawdown = (plot_df["equity"] / plot_df["equity"].cummax()) - 1
 max_dd = drawdown.min()
 
+# FIXED: Sliced index[0] from index[-1] to avoid multi-row Index array pollution
 total_days = int((plot_df.index[-1] - plot_df.index[0]).days)
 
 last_equity_val = plot_df["equity"].iloc[-1]
@@ -192,9 +201,8 @@ latest = model_df.iloc[-1]
 X_future = pd.DataFrame([latest[features].values], columns=features)
 pred, std = model.predict(X_future, return_std=True)
 
-# FIXED: Strip array structures here using [0] to create clean real numbers
-clean_val = float(pred[0]) if hasattr(pred, "__len__") else float(pred)
-clean_std = float(std[0]) if hasattr(std, "__len__") else float(std)
+clean_val = float(pred) if hasattr(pred, "__len__") else float(pred)
+clean_std = float(std) if hasattr(std, "__len__") else float(std)
 
 current_price = float(latest["Close"])
 pred_price = float(current_price * (1 + clean_val))
