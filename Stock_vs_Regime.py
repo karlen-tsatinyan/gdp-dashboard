@@ -117,10 +117,25 @@ display_start = pd.to_datetime(f"{start_year}-01-01")
 plot_df = df[df.index >= display_start].copy()
 
 # =========================================================
-# STRATEGY SIMULATION (RSI + CROSSOVER MIXED BACKTEST)
+# UPGRADED STRATEGY SIMULATION (4-STATE INSTITUTIONAL LOGIC)
 # =========================================================
-plot_df["signal"] = np.where((plot_df["rsi"] > 50) & (plot_df["Close"] > plot_df["bb_mid"]), 1, -1)
-plot_df["strategy_returns"] = plot_df["signal"] * plot_df["ret_1d"]
+conditions = [
+    (plot_df["vol_20"] > plot_df["vol_20"].quantile(0.90)),  # State 2: Tail Risk Volatility Spike
+    ((plot_df["rsi"] > 55) & (plot_df["Close"] > plot_df["bb_mid"])),  # State 1: Strong Bullish
+    ((plot_df["rsi"] < 45) & (plot_df["Close"] < plot_df["bb_mid"]))   # State -1: Strong Bearish
+]
+choices = [2, 1, -1]
+
+# Default state if conditions aren't cleanly met is 0 (Neutral Cash Protective Hold)
+plot_df["signal"] = np.select(conditions, choices, default=0)
+
+# Apply exposure multipliers across multi-outcome metrics
+exposure_multiplier = np.select(
+    [plot_df["signal"] == 1, plot_df["signal"] == -1, plot_df["signal"] == 2],
+    [1.0, -1.0, 0.5], 
+    default=0.0
+)
+plot_df["strategy_returns"] = exposure_multiplier * plot_df["ret_1d"]
 
 plot_df["equity"] = (1 + plot_df["strategy_returns"]).cumprod()
 plot_df["benchmark_equity"] = (1 + plot_df["bench_ret"]).cumprod()
@@ -145,8 +160,7 @@ sortino = (strat_mean / downside_std) * np.sqrt(252)
 drawdown = (plot_df["equity"] / plot_df["equity"].cummax()) - 1
 max_dd = drawdown.min()
 
-# FIXED: Explicit date difference conversion avoiding Pandas Index pollution
-days_delta = plot_df.index[-1] - plot_df.index[0]
+days_delta = plot_df.index[-1] - plot_df.index
 total_days = int(days_delta.days)
 
 last_equity_val = plot_df["equity"].iloc[-1]
@@ -179,11 +193,10 @@ latest = model_df.iloc[-1]
 X_future = pd.DataFrame([latest[features].values], columns=features)
 pred, std = model.predict(X_future, return_std=True)
 
-# Clean element extraction formatting variables
 current_price = float(latest["Close"])
-pred_price = float(current_price * (1 + pred[0]))
-low = float(pred_price - 1.96 * std[0] * current_price)
-high = float(pred_price + 1.96 * std[0] * current_price)
+pred_price = float(current_price * (1 + pred))
+low = float(pred_price - 1.96 * std * current_price)
+high = float(pred_price + 1.96 * std * current_price)
 direction = "TREND UP 🚀" if pred_price > current_price else "TREND DOWN 📉"
 current_regime = latest["regime"]
 
@@ -198,12 +211,11 @@ m3.metric("Expected Next Close", f"${current_price:.2f} ➔ ${pred_price:.2f}", 
 m4.metric("Strategy Sharpe Ratio", f"{sharpe:.2f}", help="Annualized return generation per unit of generalized standard-deviation metric portfolio volatility.")
 m5.metric("Strategy Sortino Ratio", f"{sortino:.2f}", help="Risk-adjusted baseline tracking metrics penalizing solely downside standard deviation structures.")
 
-# Sandbox Diagnostics Display Panel Wrapper
 with st.container(border=True):
     st.markdown("**🔬 Quant Sandbox Diagnostics & Confidence Matrices**")
     sub_col1, sub_col2, sub_col3, sub_col4 = st.columns(4)
-    sub_col1.metric("95% CI Lower Boundary", f"${low:.2f}", help="Statistical minimum asset threshold boundary parameters under normal baseline variations (95% Confidence).")
-    sub_col2.metric("95% CI Upper Boundary", f"${high:.2f}", help="Statistical maximum potential asset target constraints under standard variance models (95% Confidence).")
+    sub_col1.metric("95% CI Lower Boundary", f"${low:.2f}", help="Statistical minimum asset threshold boundary parameters under normal baseline variations (95% Confidence bounds).")
+    sub_col2.metric("95% CI Upper Boundary", f"${high:.2f}", help="Statistical maximum potential asset target constraints under standard variance models (95% Confidence bounds).")
     sub_col3.metric("Backtest Win Rate", f"{win_rate*100:.2f}%", help="The count percentage of tracked operational trade modifications printing raw positive profit curves.")
     sub_col4.metric("System Profit Factor", f"{profit_factor:.2f}", help="Gross cumulative trade generation profits over structural gross system losses. System efficiency factor.")
 
@@ -214,6 +226,44 @@ r1.metric("Historical 95% VaR", f"{var_95_hist * 100:.2f}%", help="The historica
 r2.metric("Parametric 95% VaR", f"{var_95_param * 100:.2f}%", help="The theoretical maximum expected loss assuming standard normal standardizations.")
 r3.metric("95% Expected Shortfall (CVaR)", f"{cvar_95 * 100:.2f}%", help="The average expected drawdown on occurrences where the base 95% VaR limits are actively broken.")
 r4.metric("Calmar Risk Ratio", f"{calmar:.2f}", help="Annualized return rate divided by the maximum historical peak-to-trough account drawdown.")
+
+# =========================================================
+# AUTOMATED RISK-BASED POSITION SIZING CALCULATOR
+# =========================================================
+st.subheader("🧮 Automated Institutional Position Sizing Model")
+with st.container(border=True):
+    st.write("Input your portfolio details to dynamically scale allocations matching live tail risk boundaries.")
+    
+    ps_col1, ps_col2, ps_col3 = st.columns(3)
+    with ps_col1:
+        total_portfolio = st.number_input("Total Account Equity ($)", min_value=100.0, value=100000.0, step=1000.0, help="Your total liquid trading capital pool available.")
+    with ps_col2:
+        risk_percentage = st.slider("Max Account Risk per Trade (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, help="The maximum percentage of total equity you are willing to lose if your structural stop floor triggers.")
+    with ps_col3:
+        sizing_method = st.selectbox("Position Sizing Driver", ["Structural Stop Loss (95% CI)", "Tail Risk Metric (95% CVaR)"], help="Choose whether to size your trade based on the lower chart boundary or the statistical expected shortfall percentage.")
+
+    max_dollar_risk = total_portfolio * (risk_percentage / 100.0)
+    
+    if sizing_method == "Structural Stop Loss (95% CI)":
+        per_share_risk = max(current_price - low, 0.01)
+        suggested_shares = int(max_dollar_risk / per_share_risk)
+        risk_description = f"Invalidation floor hit at ${low:.2f}"
+    else:
+        cvar_loss_pct = abs(cvar_95)
+        per_share_risk = current_price * cvar_loss_pct
+        suggested_shares = int(max_dollar_risk / per_share_risk)
+        risk_description = f"Statistical 95% CVaR tail drop of {cvar_loss_pct*100:.2f}%"
+
+    max_cash_shares = int(total_portfolio / current_price)
+    final_shares = min(suggested_shares, max_cash_shares)
+    total_position_value = final_shares * current_price
+    portfolio_allocation_pct = (total_position_value / total_portfolio) * 100.0
+
+    st.markdown("### **🎯 Execution Allocation Blueprint**")
+    out_col1, out_col2, out_col3 = st.columns(3)
+    out_col1.metric("Suggested Position Size", f"{final_shares:,} Shares", help="The absolute count volume of stock units to purchase.")
+    out_col2.metric("Total Capital Allocation", f"${total_position_value:,.2f}", f"{portfolio_allocation_pct:.1f}% of portfolio", help="Total raw cash required to purchase these units.")
+    out_col3.metric("Max Cash Loss Exposure", f"${max_dollar_risk:,.2f}", f"Driven by: {risk_description}", delta_color="inverse", help="Your defined absolute absolute capital write-off exposure if market parameters breakdown.")
 
 # =========================================================
 # MASTER SELECTION CONTROLS PANEL
@@ -289,11 +339,17 @@ if active_plots > 0:
             line=dict(color='#00D4B2', shape='hv')
         ), row=current_row, col=1)
         
+        # Comprehensive 4-state vertical axis categorical labeling mapping configurations
         fig.update_yaxes(
             tickmode="array",
-            tickvals=[-1, 1],
-            ticktext=["Bearish / Cash 🐻", "Bullish / Long 🐂"],
-            title_text="Strategy Allocation", 
+            tickvals=[-1, 0, 1, 2],
+            ticktext=[
+                "Bearish Short 🐻", 
+                "Neutral Cash 🛡️", 
+                "Bullish Long 🐂", 
+                "Tail-Risk Caution ⚠️"
+            ],
+            title_text="System Allocation", 
             row=current_row, 
             col=1
         )
@@ -322,7 +378,7 @@ if active_plots > 0:
         fig.update_yaxes(title_text="RSI Value", row=current_row, col=1)
         current_row += 1
 
-    # Adaptive Height Logic
+    # Adaptive Height Configurations
     chart_layout_height = 500 if active_plots == 1 else (300 * active_plots)
     
     fig.update_layout(height=chart_layout_height, showlegend=True, template="plotly_dark", margin=dict(t=20, b=20, l=10, r=10))
