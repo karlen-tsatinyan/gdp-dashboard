@@ -131,11 +131,27 @@ win_rate = len(wins) / (len(wins) + len(losses) + 1e-9)
 profit_factor = plot_df["strategy_returns"][plot_df["strategy_returns"] > 0].sum() / (abs(plot_df["strategy_returns"][plot_df["strategy_returns"] < 0].sum()) + 1e-9)
 
 # Sharpe Calculations
-sharpe = (plot_df["strategy_returns"].mean() / (plot_df["strategy_returns"].std() + 1e-9)) * np.sqrt(252)
+strat_mean = plot_df["strategy_returns"].mean()
+strat_std = plot_df["strategy_returns"].std() + 1e-9
+sharpe = (strat_mean / strat_std) * np.sqrt(252)
 bench_sharpe = (plot_df["bench_ret"].mean() / (plot_df["bench_ret"].std() + 1e-9)) * np.sqrt(252)
 
+# Sortino Ratio Calculation
+downside_returns = plot_df["strategy_returns"].clip(upper=0)
+downside_std = downside_returns.std() + 1e-9
+sortino = (strat_mean / downside_std) * np.sqrt(252)
+
+# Drawdown & Calmar Ratio
 drawdown = (plot_df["equity"] / plot_df["equity"].cummax()) - 1
 max_dd = drawdown.min()
+total_days = (plot_df.index[-1] - plot_df.index[0]).days
+annualized_return = (plot_df["equity"].iloc[-1]) ** (365.25 / (total_days + 1e-9)) - 1
+calmar = annualized_return / (abs(max_dd) + 1e-9)
+
+# Value at Risk (VaR) & Conditional Value at Risk (CVaR)
+var_95_hist = np.percentile(plot_df["strategy_returns"], 5)
+var_95_param = strat_mean - (1.645 * strat_std)
+cvar_95 = plot_df["strategy_returns"][plot_df["strategy_returns"] <= var_95_hist].mean()
 
 # =========================================================
 # FORECAST ENGINE (BAYESIAN MODEL)
@@ -164,20 +180,28 @@ current_regime = latest["regime"]
 # =========================================================
 # INITIAL METRICS VIEWPORTS
 # =========================================================
-st.subheader("🏁 Live Structural Regime & Analytics Forecast")
+st.subheader("🏁 Live Structural Regime & Performance Analytics")
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Current Market Regime", current_regime)
 m2.metric("Predicted Bias Direction", direction)
 m3.metric("Expected Next Close", f"${current_price:.2f} ➔ ${pred_price:.2f}")
 m4.metric("Strategy Sharpe Ratio", f"{sharpe:.2f}")
-m5.metric(f"{benchmark} Benchmark Sharpe", f"{bench_sharpe:.2f}")
+m5.metric("Strategy Sortino Ratio", f"{sortino:.2f}", help="Risk-adjusted return focusing purely on downside volatility.")
 
 st.info(f"""
 🔒 **Statistical Confidence Spectrum (95% CI):** ${low:.2f} ———→ ${high:.2f}  |  
 🎯 **Backtest Win Rate Metric:** {win_rate*100:.2f}%  |  
 📊 **System Profit Factor:** {profit_factor:.2f}  |  
-🩸 **Historical Peak Account Drawdown:** {max_dd*100:.2f}%
+🧱 **Calmar Performance Ratio:** {calmar:.2f}
 """)
+
+# Advanced Risk Dashboard Section
+st.subheader("⚠️ Tail Risk & Capital Protection Matrix (1-Day Horizon)")
+r1, r2, r3, r4 = st.columns(4)
+r1.metric("Historical 95% VaR", f"{var_95_hist * 100:.2f}%", help="The historical maximum expected loss at 95% confidence.")
+r2.metric("Parametric 95% VaR", f"{var_95_param * 100:.2f}%", help="The theoretical maximum expected loss assuming normal distributions.")
+r3.metric("95% Expected Shortfall (CVaR)", f"{cvar_95 * 100:.2f}%", help="The average expected loss if the 95% VaR threshold is breached.")
+r4.metric("Peak Portfolio Drawdown", f"{max_dd * 100:.2f}%", help="The largest historical drop from a prior peak equity value.")
 
 # =========================================================
 # MASTER SELECTION CONTROLS PANEL
@@ -201,160 +225,78 @@ with st.expander("🛠️ MASTER INITIAL CHART CONTROL BOARD", expanded=True):
     with cx3:
         st.markdown("**Technical Indicator Features & Regimes**")
         show_regime_chart = st.checkbox("Market Regime Trend Crossover Chart (50 vs 200 SMA)", value=False)
-        show_macd = st.checkbox("MACD Crossover Momentum Grid", value=False)
-        show_rsi = st.checkbox("RSI Overbought/Oversold Oscillator", value=False)
-        show_risk = st.checkbox("20-Day Rolling Risk Indicators (`vol_20`)", value=False)
+        show_macd = st.checkbox("MACD Crossover Momentum Histogram", value=False)
+        show_rsi = st.checkbox("Relative Strength Index (RSI) Oscillator", value=False)
 
 # =========================================================
-# UNIVERSAL PLOTLY STYLING HELPER
+# DYNAMIC PLOTLY RENDERING CANVAS
 # =========================================================
-def apply_clean_layout(fig, height=400, y_title=None, legend_title="Variables"):
-    fig.update_layout(
-        template="plotly_dark",
-        height=height,
-        margin=dict(l=60, r=30, t=40, b=40),
-        paper_bgcolor="#111111",
-        plot_bgcolor="#111111",
-        showlegend=True,
-        legend=dict(
-            title_text=legend_title,
-            orientation="v",
-            yanchor="top",
-            y=0.99,
-            xanchor="left",
-            x=0.01,
-            bgcolor="rgba(17,17,17,0.9)",
-            bordercolor="rgba(255,255,255,0.2)",
-            borderwidth=1,
-            font=dict(size=11, color="#FFFFFF")
-        )
-    )
-    fig.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False)
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.08)", zeroline=False, title_text=y_title)
+active_plots = sum([show_equity, show_drawdown, show_signals, show_price_base, show_bb, show_price_sig, show_regime_chart, show_macd, show_rsi])
 
-# =========================================================
-# GRAPH CANVAS ARCHITECTURE RENDERS
-# =========================================================
-
-# 1. Equity Curves Plot
-if show_equity:
-    st.subheader("📈 Strategy Compounded Equity vs Benchmark Baseline")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["equity"], name="Quant Strategy Returns Curve", line=dict(color="#00E676", width=2.5)))
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["benchmark_equity"], name=f"Passive Hold Matrix ({benchmark})", line=dict(color="#FFFFFF", dash="dash", width=1.5)))
-    apply_clean_layout(fig, height=450, y_title="Growth Multiple", legend_title="Account Portfolios")
-    st.plotly_chart(fig, width='stretch')
-
-# 2. Peak-to-Trough Drawdown
-if show_drawdown:
-    st.subheader("🩸 Strategy Drawdown Profile")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=plot_df.index, y=drawdown * 100, fill="tozeroy", name="Strategy Historical Drawdown %", line=dict(color="#FF1744", width=1.5), fillcolor="rgba(255, 23, 68, 0.15)"))
-    apply_clean_layout(fig, height=220, y_title="% Drop from Peak", legend_title="Risk Vector Metrics")
-    st.plotly_chart(fig, width='stretch')
-
-# 3. Signals Vector
-if show_signals:
-    st.subheader("⚡ Trading Signals Allocation States")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["signal"], line=dict(color="#FF9100", shape="hv", width=2), name="System Strategy Execution State (-1 vs +1)"))
-    apply_clean_layout(fig, height=180, legend_title="System Outputs")
-    fig.update_yaxes(tickvals=[-1, 1], ticktext=["Short (-1)", "Long (+1)"])
-    st.plotly_chart(fig, width='stretch')
-
-# 4. Pure Price Line
-if show_price_base:
-    st.subheader(f"📊 Raw {ticker} Price Close Topology")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Close"], name=f"Raw {ticker} Historical Closing Value", line=dict(color="#00E5FF", width=2)))
-    apply_clean_layout(fig, height=350, y_title="Price ($)", legend_title="Asset Trackers")
-    st.plotly_chart(fig, width='stretch')
-
-# 5. Bollinger Bands Pricing
-if show_bb:
-    st.subheader(f"🛡️ Bollinger Bands Channels vs Basis Mid-Line")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["bb_upper"], name="+2 StdDev Upper Volatility Boundary Band", line=dict(color="rgba(0, 229, 255, 0.35)", dash="dot")))
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["bb_lower"], name="-2 StdDev Lower Volatility Boundary Band", line=dict(color="rgba(0, 229, 255, 0.35)", dash="dot"), fill="tonexty", fillcolor="rgba(0, 229, 255, 0.07)"))
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Close"], name=f"{ticker} Underlying Spot Asset Close", line=dict(color="#FFFFFF", width=2)))
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["bb_mid"], name="Basis Average Moving Channel (20 SMA)", line=dict(color="#FFD700", width=1.5)))
-    apply_clean_layout(fig, height=450, y_title="Price ($)", legend_title="Bollinger Envelopes")
-    st.plotly_chart(fig, width='stretch')
-
-# 6. Price + Signal Multiplot Overlay
-if show_price_sig:
-    st.subheader(f"🎯 Integrated Price Action + Signal Entry Overlay Grid")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Close"], name="Underlying Raw Spot Asset Value Line", line=dict(color="#78909C", width=1.5)))
+if active_plots > 0:
+    fig = make_subplots(rows=active_plots, cols=1, shared_xaxes=True, vertical_spacing=0.05)
+    current_row = 1
     
-    longs = plot_df[plot_df["signal"] == 1]
-    shorts = plot_df[plot_df["signal"] == -1]
-    
-    fig.add_trace(go.Scatter(x=longs.index, y=longs["Close"], mode="markers", name="Long Strategy Entry Allocations", marker=dict(color="#00E676", symbol="triangle-up", size=9, line=dict(color="#111111", width=1))))
-    fig.add_trace(go.Scatter(x=shorts.index, y=shorts["Close"], mode="markers", name="Short Strategy Entry / Flip Actions", marker=dict(color="#FF1744", symbol="triangle-down", size=9, line=dict(color="#111111", width=1))))
-    apply_clean_layout(fig, height=450, y_title="Price ($)", legend_title="Execution Layers")
-    st.plotly_chart(fig, width='stretch')
-
-# 7. Market Regime Crossover Chart
-if show_regime_chart:
-    st.subheader("🦁 Market Regime Trend Crossover Matrix (50 vs 200 SMA)")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Close"], name="Asset Reference Underlier Spot Index", line=dict(color="#FFFFFF", width=1.5)))
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["sma_50"], name="Fast Crossover Filter Vector (50 SMA)", line=dict(color="#00E5FF", width=2)))
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["sma_200"], name="Slow Structural Trend Anchor Line (200 SMA)", line=dict(color="#E040FB", width=2.5)))
-    
-    regime_changes = plot_df["sma_50"] > plot_df["sma_200"]
-    diff_blocks = regime_changes.astype(int).diff().fillna(0)
-    switch_points = plot_df[diff_blocks != 0].index.tolist()
-    boundaries = [plot_df.index[0]] + switch_points + [plot_df.index[-1]]
-    
-    # FIX: Used solid opaque colors for the legend identifiers so they display sharply on the dark background
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", marker=dict(symbol="square", color="#00E676", size=10), name="Structural Bull Zone Matrix State"))
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", marker=dict(symbol="square", color="#FF1744", size=10), name="Structural Bear Zone Matrix State"))
-
-    for i in range(len(boundaries) - 1):
-        mid_idx = plot_df.index[plot_df.index >= boundaries[i]][0]
-        is_bull = plot_df.loc[mid_idx, "sma_50"] > plot_df.loc[mid_idx, "sma_200"]
-        bg_color = "rgba(0, 230, 118, 0.05)" if is_bull else "rgba(255, 23, 68, 0.05)"
+    if show_price_base:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Close"], name=f"{ticker} Close"), row=current_row, col=1)
+        fig.update_yaxes(title_text="Price ($)", row=current_row, col=1)
+        current_row += 1
         
-        fig.add_vrect(
-            x0=boundaries[i], x1=boundaries[i+1],
-            fillcolor=bg_color, opacity=1,
-            layer="below", line_width=0
-        )
-        
-    apply_clean_layout(fig, height=450, y_title="Price ($)", legend_title="Macro Regimes")
-    st.plotly_chart(fig, width='stretch')
+    if show_bb:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Close"], name="Close"), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["bb_upper"], name="BB Upper", line=dict(dash='dash')), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["bb_mid"], name="BB Mid", line=dict(color='gray')), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["bb_lower"], name="BB Lower", line=dict(dash='dash')), row=current_row, col=1)
+        fig.update_yaxes(title_text="Bollinger Bands", row=current_row, col=1)
+        current_row += 1
 
-# 8. MACD Layout Engine
-if show_macd:
-    st.subheader("📉 Moving Average Convergence Divergence Momentum Grid")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["macd_line"], name="Fast Core Momentum MACD Vector (12/26)", line=dict(color="#00E5FF", width=2)))
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["macd_signal"], name="Slow Baseline Signal Vector Line (9)", line=dict(color="#E040FB", width=1.5)))
-    
-    hist_colors = np.where(plot_df["macd_hist"] >= 0, "#00C853", "#D50000")
-    fig.add_trace(go.Bar(x=plot_df.index, y=plot_df["macd_hist"], name="Net Acceleration Spread Histogram", marker_color=hist_colors, opacity=0.6))
-    apply_clean_layout(fig, height=280, legend_title="MACD Outputs")
-    st.plotly_chart(fig, width='stretch')
+    if show_regime_chart:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Close"], name="Close"), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["sma_50"], name="50 SMA"), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["sma_200"], name="200 SMA"), row=current_row, col=1)
+        fig.update_yaxes(title_text="Regime Cross", row=current_row, col=1)
+        current_row += 1
 
-# 9. RSI Profile
-if show_rsi:
-    st.subheader("⚡ Relative Strength Index Momentum Oscillator Profile")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["rsi"], name="Calculated Relative Strength Index Vector", line=dict(color="#00E5FF", width=2)))
-    apply_clean_layout(fig, height=250, legend_title="Oscillator Curves")
-    
-    fig.add_hline(y=70, line_dash="dash", line_color="#FF1744", opacity=0.7, annotation_text="Overbought Cutoff (70)", annotation_position="top left")
-    fig.add_hline(y=50, line_dash="dot", line_color="#78909C", opacity=0.5)
-    fig.add_hline(y=30, line_dash="dash", line_color="#00E676", opacity=0.7, annotation_text="Oversold Cutoff (30)", annotation_position="bottom left")
-    fig.update_yaxes(range=[10, 90])
-    st.plotly_chart(fig, width='stretch')
+    if show_equity:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["equity"], name="Strategy Growth"), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["benchmark_equity"], name="Bench Growth", line=dict(color='orange')), row=current_row, col=1)
+        fig.update_yaxes(title_text="Returns Mult.", row=current_row, col=1)
+        current_row += 1
 
-# 10. Risk Volatility Variance Tracker
-if show_risk:
-    st.subheader("📊 20-Day Rolling Historic Volatility Footprint")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["vol_20"] * 100, name="20-Day Statistical Pricing Sigma Deviation Vector", line=dict(color="#E040FB", width=2)))
-    apply_clean_layout(fig, height=250, y_title="Volatility %", legend_title="Risk Metrics")
-    st.plotly_chart(fig, width='stretch')
+    if show_drawdown:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=drawdown * 100, name="Drawdown %", fill='tozeroy', line=dict(color='red')), row=current_row, col=1)
+        fig.update_yaxes(title_text="Drawdown %", row=current_row, col=1)
+        current_row += 1
+
+    if show_signals:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["signal"], name="Signal State", mode='lines'), row=current_row, col=1)
+        fig.update_yaxes(title_text="Position", row=current_row, col=1)
+        current_row += 1
+
+    if show_price_sig:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Close"], name="Price Line"), row=current_row, col=1)
+        buys = plot_df[plot_df["signal"] == 1]
+        sells = plot_df[plot_df["signal"] == -1]
+        fig.add_trace(go.Scatter(x=buys.index, y=buys["Close"], mode='markers', name='Long Allocation', marker=dict(symbol='triangle-up', color='green', size=7)), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=sells.index, y=sells["Close"], mode='markers', name='Short/Cash Allocation', marker=dict(symbol='triangle-down', color='red', size=7)), row=current_row, col=1)
+        fig.update_yaxes(title_text="Signals Execution", row=current_row, col=1)
+        current_row += 1
+
+    if show_macd:
+        fig.add_trace(go.Bar(x=plot_df.index, y=plot_df["macd_hist"], name="MACD Hist"), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["macd_line"], name="MACD Line"), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["macd_signal"], name="Signal Line"), row=current_row, col=1)
+        fig.update_yaxes(title_text="MACD Matrix", row=current_row, col=1)
+        current_row += 1
+
+    if show_rsi:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["rsi"], name="RSI", line=dict(color='purple')), row=current_row, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=current_row, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=current_row, col=1)
+        fig.update_yaxes(title_text="RSI Value", row=current_row, col=1)
+        current_row += 1
+
+    fig.update_layout(height=250 * active_plots, showlegend=True, template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Select one or more configurations from the control panel board above to render analytics panels.")
